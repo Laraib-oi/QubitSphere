@@ -71,3 +71,9 @@ class CircuitValidationResponse(BaseModel):
 
     success: bool = True
     data: ValidationResult
+
+
+class CircuitSimulationRequest(CircuitValidationRequest):
+    """Request model for POST /api/circuit/simulate."""
+
+    shots: StrictInt = Field(default=1024, ge=1, le=10_000)

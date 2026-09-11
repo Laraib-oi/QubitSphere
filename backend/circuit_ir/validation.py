@@ -219,4 +219,12 @@ def validate_circuit(circuit: CircuitIR) -> ValidationResult:
             if measurement_error:
                 errors.append(measurement_error)
 
+        if len(circuit.measurements) > circuit.classical_bits:
+            errors.append(
+                _error(
+                    "INVALID_CIRCUIT",
+                    "classicalBits must be at least the number of measured qubits.",
+                )
+            )
+
     return ValidationResult(valid=not errors, errors=errors)
