@@ -1,15 +1,14 @@
 import type { CircuitIR, CircuitSimulationResult } from "@/types/circuit";
 
+import { MeasurementHistogram } from "@/components/MeasurementHistogram";
+import { ProbabilityBars } from "@/components/ProbabilityBars";
+
 type ResultsPanelProps = {
   circuit: CircuitIR;
   result: CircuitSimulationResult | null;
   isRunning: boolean;
   error: string;
 };
-
-function percentage(value: number): string {
-  return `${(value * 100).toFixed(1)}%`;
-}
 
 function isBellStateCircuit(circuit: CircuitIR): boolean {
   const [hadamard, controlledNot] = circuit.operations;
@@ -31,11 +30,32 @@ function isBellStateCircuit(circuit: CircuitIR): boolean {
   );
 }
 
+function resultContext(circuit: CircuitIR): {
+  title: string;
+  description: string;
+} {
+  if (isBellStateCircuit(circuit)) {
+    return {
+      title: "Results for Bell State",
+      description: "H on q0 followed by CX(q0 → q1)",
+    };
+  }
+
+  const operationLabel = `${circuit.operations.length} operation${
+    circuit.operations.length === 1 ? "" : "s"
+  }`;
+  const measurementLabel = circuit.measurements.length
+    ? `measured q${circuit.measurements.join(", q")}`
+    : "no measured qubits";
+
+  return {
+    title: "Results for current circuit",
+    description: `${circuit.qubits} qubits · ${operationLabel} · ${measurementLabel}`,
+  };
+}
+
 export function ResultsPanel({ circuit, result, isRunning, error }: ResultsPanelProps) {
-  const countEntries = result ? Object.entries(result.counts) : [];
-  const probabilityEntries = result
-    ? Object.entries(result.probabilities)
-    : [];
+  const currentContext = resultContext(circuit);
   const bellStateRun = Boolean(
     result &&
       isBellStateCircuit(circuit) &&
@@ -96,52 +116,34 @@ export function ResultsPanel({ circuit, result, isRunning, error }: ResultsPanel
             </div>
           </div>
 
-          {result ? (
-            <div className="result-insight">
-              <span className="insight-mark" aria-hidden="true">
-                ✓
+          <div className="result-context" aria-label="Current circuit result context">
+            <span className="result-context-label">Current circuit</span>
+            <strong>{currentContext.title}</strong>
+            <span>{currentContext.description}</span>
+          </div>
+
+          <div className="result-insight">
+            <span className="insight-mark" aria-hidden="true">
+              ✓
+            </span>
+            {bellStateRun ? (
+              <span>
+                The Bell State run produced the correlated outcomes <strong>00</strong>{" "}
+                and <strong>11</strong>.
               </span>
-              {bellStateRun ? (
-                <span>
-                  The Bell State run produced the correlated outcomes <strong>00</strong>{" "}
-                  and <strong>11</strong>.
-                </span>
-              ) : (
-                <span>
-                  The simulator returned verified outcomes for the current Circuit IR.
-                </span>
-              )}
-            </div>
-          ) : null}
+            ) : (
+              <span>
+                The simulator returned verified outcomes for the current Circuit IR.
+              </span>
+            )}
+          </div>
 
           <div className="result-section">
             <div className="result-section-heading">
               <h3>Measurement counts</h3>
               <span>Observed shots</span>
             </div>
-            {countEntries.length ? (
-              <div className="measurement-list">
-                {countEntries.map(([state, count]) => (
-                  <div className="measurement-row" key={state}>
-                    <code>{state}</code>
-                    <div className="measurement-bar-track" aria-hidden="true">
-                      <span
-                        className="measurement-bar"
-                        style={{
-                          width: `${Math.min(
-                            100,
-                            (result.probabilities[state] ?? 0) * 100
-                          )}%`,
-                        }}
-                      />
-                    </div>
-                    <strong>{count}</strong>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="muted-copy">No measured outcomes were returned.</p>
-            )}
+            <MeasurementHistogram counts={result.counts} />
           </div>
 
           <div className="result-section">
@@ -149,18 +151,7 @@ export function ResultsPanel({ circuit, result, isRunning, error }: ResultsPanel
               <h3>Probabilities</h3>
               <span>Derived by the simulator</span>
             </div>
-            {probabilityEntries.length ? (
-              <div className="probability-list">
-                {probabilityEntries.map(([state, probability]) => (
-                  <div className="probability-row" key={state}>
-                    <code>{state}</code>
-                    <span>{percentage(probability)}</span>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="muted-copy">No probabilities were returned.</p>
-            )}
+            <ProbabilityBars probabilities={result.probabilities} />
           </div>
         </div>
       ) : null}
