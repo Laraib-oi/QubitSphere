@@ -1866,11 +1866,23 @@ Completed:
 * Circuit IR validation implemented
 * `POST /api/circuit/validate` implemented
 * Circuit IR tests implemented and passing
+* Qiskit + Qiskit Aer dependencies added
+* Framework-specific Qiskit execution adapter implemented
+* Quantum simulation service implemented
+* `POST /api/circuit/simulate` implemented
+* Real Bell State Aer simulation implemented
+* Simulator-derived counts and probabilities implemented
+* Honest statevector handling implemented for the shot-only path
+* Qubit/bit-order regression tests implemented
+* 32 backend tests passing
 
 Next implementation checkpoint:
 
-* Qiskit + Qiskit Aer execution layer
-* Bell State simulation
+* Bell State Circuit Lab frontend
+* Connect the Circuit Lab to the existing Circuit IR validation API
+* Connect the Circuit Lab to the existing simulation API
+* Display verified simulation results
+* Build the first learner-facing quantum interaction flow
 
 ---
 
