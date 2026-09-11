@@ -1875,14 +1875,15 @@ Completed:
 * Honest statevector handling implemented for the shot-only path
 * Qubit/bit-order regression tests implemented
 * 32 backend tests passing
+* Bell State Circuit Lab frontend implemented
+* Circuit Lab integrated with the Circuit IR validation API
+* Circuit Lab integrated with the simulation API
+* Verified simulation results displayed
+* First learner-facing Bell State quantum interaction flow implemented
 
 Next implementation checkpoint:
 
-* Bell State Circuit Lab frontend
-* Connect the Circuit Lab to the existing Circuit IR validation API
-* Connect the Circuit Lab to the existing simulation API
-* Display verified simulation results
-* Build the first learner-facing quantum interaction flow
+* Visualization
 
 ---
 
