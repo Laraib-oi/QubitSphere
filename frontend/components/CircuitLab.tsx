@@ -1,16 +1,26 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
+import { BellStateLesson } from "@/components/BellStateLesson";
+import { BellStatePractice } from "@/components/BellStatePractice";
 import { CircuitApiError, simulateCircuit, validateCircuit } from "@/lib/circuit-api";
 import { CircuitCanvas } from "@/components/CircuitCanvas";
+import {
+  LearningProgress,
+  type LearningProgressState,
+  type LearningStep,
+} from "@/components/LearningProgress";
 import { ResultsPanel } from "@/components/ResultsPanel";
+import { TutorPanel } from "@/components/TutorPanel";
+import { askTutor, TutorApiError } from "@/lib/tutor-api";
 import type {
   CircuitIR,
   CircuitOperation,
   CircuitSimulationResult,
   CircuitValidationResult,
 } from "@/types/circuit";
+import type { TutorResponseData } from "@/types/tutor";
 
 const BELL_STATE: CircuitIR = {
   version: "1.0",
@@ -30,8 +40,55 @@ const BELL_STATE: CircuitIR = {
 
 type RequestState = "idle" | "loading" | "success" | "error";
 
+const PROGRESS_STORAGE_KEY = "qubitsphere.bell-state-progress.v1";
+const EMPTY_PROGRESS: LearningProgressState = {
+  learn: false,
+  build: false,
+  run: false,
+  challenge: false,
+  ask: false,
+  practice: false,
+};
+
 function normalizeOperations(operations: CircuitOperation[]): CircuitOperation[] {
   return operations.map((operation, position) => ({ ...operation, position }));
+}
+
+function isBellStateCnot(operation: CircuitOperation): boolean {
+  return operation.gate === "CX" && operation.control === 0 && operation.target === 1;
+}
+
+function isCanonicalBellState(circuit: CircuitIR): boolean {
+  const [hadamard, controlledNot] = circuit.operations;
+
+  return (
+    circuit.qubits === 2 &&
+    circuit.classicalBits === 2 &&
+    circuit.operations.length === 2 &&
+    circuit.measurements.length === 2 &&
+    circuit.measurements[0] === 0 &&
+    circuit.measurements[1] === 1 &&
+    hadamard?.gate === "H" &&
+    hadamard.targets?.length === 1 &&
+    hadamard.targets[0] === 0 &&
+    hadamard.position === 0 &&
+    controlledNot !== undefined &&
+    isBellStateCnot(controlledNot) &&
+    controlledNot.position === 1
+  );
+}
+
+function isCnotRemovedExperiment(circuit: CircuitIR): boolean {
+  return (
+    circuit.qubits === 2 &&
+    circuit.measurements.length === 2 &&
+    circuit.measurements[0] === 0 &&
+    circuit.measurements[1] === 1 &&
+    circuit.operations.some(
+      (operation) => operation.gate === "H" && operation.targets?.[0] === 0
+    ) &&
+    !circuit.operations.some(isBellStateCnot)
+  );
 }
 
 export function CircuitLab() {
@@ -45,7 +102,17 @@ export function CircuitLab() {
   const [simulationState, setSimulationState] = useState<RequestState>("idle");
   const [simulationResult, setSimulationResult] =
     useState<CircuitSimulationResult | null>(null);
+  const [baselineResult, setBaselineResult] =
+    useState<CircuitSimulationResult | null>(null);
   const [simulationError, setSimulationError] = useState("");
+  const [tutorState, setTutorState] = useState<RequestState>("idle");
+  const [tutorResponse, setTutorResponse] = useState<TutorResponseData | null>(null);
+  const [tutorError, setTutorError] = useState("");
+  const [tutorErrorCode, setTutorErrorCode] = useState("");
+  const [progress, setProgress] = useState<LearningProgressState>(EMPTY_PROGRESS);
+  const [isProgressLoaded, setIsProgressLoaded] = useState(false);
+  const circuitContextVersion = useRef(0);
+  const tutorRequestVersion = useRef(0);
 
   const selectedOperation = useMemo(
     () =>
@@ -54,6 +121,46 @@ export function CircuitLab() {
         : circuit.operations[selectedOperationIndex] ?? null,
     [circuit.operations, selectedOperationIndex]
   );
+
+  useEffect(() => {
+    const loadProgress = () => {
+      try {
+        const saved = window.localStorage.getItem(PROGRESS_STORAGE_KEY);
+        if (saved) {
+          const parsed: unknown = JSON.parse(saved);
+          if (parsed && typeof parsed === "object") {
+            const savedProgress = parsed as Partial<LearningProgressState>;
+            setProgress({
+              learn: savedProgress.learn === true,
+              build: savedProgress.build === true,
+              run: savedProgress.run === true,
+              challenge: savedProgress.challenge === true,
+              ask: savedProgress.ask === true,
+              practice: savedProgress.practice === true,
+            });
+          }
+        }
+      } catch {
+        window.localStorage.removeItem(PROGRESS_STORAGE_KEY);
+      } finally {
+        setIsProgressLoaded(true);
+      }
+    };
+
+    const timer = window.setTimeout(loadProgress, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!isProgressLoaded) {
+      return;
+    }
+    window.localStorage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify(progress));
+  }, [isProgressLoaded, progress]);
+
+  function completeStep(step: LearningStep) {
+    setProgress((current) => (current[step] ? current : { ...current, [step]: true }));
+  }
 
   function updateCircuit(nextOperations: CircuitOperation[]) {
     setCircuit((current) => ({
@@ -66,6 +173,16 @@ export function CircuitLab() {
     setSimulationState("idle");
     setSimulationResult(null);
     setSimulationError("");
+    invalidateTutorContext();
+  }
+
+  function invalidateTutorContext() {
+    circuitContextVersion.current += 1;
+    tutorRequestVersion.current += 1;
+    setTutorState("idle");
+    setTutorResponse(null);
+    setTutorError("");
+    setTutorErrorCode("");
   }
 
   function loadBellState() {
@@ -82,6 +199,7 @@ export function CircuitLab() {
     setSimulationState("idle");
     setSimulationResult(null);
     setSimulationError("");
+    invalidateTutorContext();
   }
 
   function addSingleQubitGate(gate: "H" | "X") {
@@ -114,6 +232,14 @@ export function CircuitLab() {
     setSelectedOperationIndex(nextOperations.length ? nextOperations.length - 1 : null);
   }
 
+  function removeBellStateCnot() {
+    const nextOperations = circuit.operations.filter(
+      (operation) => !isBellStateCnot(operation)
+    );
+    updateCircuit(nextOperations);
+    setSelectedOperationIndex(nextOperations.length ? 0 : null);
+  }
+
   async function requestValidation(): Promise<CircuitValidationResult | null> {
     setValidationState("loading");
     setValidationError("");
@@ -141,6 +267,8 @@ export function CircuitLab() {
   }
 
   async function handleRun() {
+    const isModifiedBellExperiment = isCnotRemovedExperiment(circuit);
+    invalidateTutorContext();
     setSimulationState("loading");
     setSimulationError("");
     setSimulationResult(null);
@@ -154,8 +282,18 @@ export function CircuitLab() {
 
     try {
       const response = await simulateCircuit(circuit);
-      setSimulationResult(response.data ?? null);
+      const nextSimulationResult = response.data ?? null;
+      setSimulationResult(nextSimulationResult);
+      if (nextSimulationResult && isCanonicalBellState(circuit)) {
+        setBaselineResult(nextSimulationResult);
+      }
       setSimulationState("success");
+      completeStep("build");
+      completeStep("run");
+      if (response.data && isModifiedBellExperiment) {
+        completeStep("challenge");
+      }
+      invalidateTutorContext();
     } catch (error) {
       const message =
         error instanceof CircuitApiError
@@ -166,10 +304,64 @@ export function CircuitLab() {
     }
   }
 
+  async function handleAskTutor(question: string) {
+    const requestCircuit = circuit;
+    const requestResult = simulationResult;
+    const requestContextVersion = circuitContextVersion.current;
+    const requestVersion = ++tutorRequestVersion.current;
+
+    setTutorState("loading");
+    setTutorError("");
+    setTutorErrorCode("");
+    setTutorResponse(null);
+
+    try {
+      const response = await askTutor({
+        question,
+        lessonId: "bell-state-001",
+        circuit: requestCircuit,
+        ...(requestResult ? { executionId: requestResult.executionId } : {}),
+        mode: "interpret",
+      });
+
+      if (
+        requestVersion !== tutorRequestVersion.current ||
+        requestContextVersion !== circuitContextVersion.current
+      ) {
+        return;
+      }
+
+      setTutorResponse(response.data ?? null);
+      setTutorState("success");
+      if (requestResult) {
+        completeStep("ask");
+      }
+    } catch (error) {
+      if (
+        requestVersion !== tutorRequestVersion.current ||
+        requestContextVersion !== circuitContextVersion.current
+      ) {
+        return;
+      }
+
+      const message =
+        error instanceof TutorApiError
+          ? error.message
+          : "The tutor could not answer this question.";
+      setTutorError(message);
+      setTutorErrorCode(error instanceof TutorApiError ? error.code : "UNKNOWN_ERROR");
+      setTutorState("error");
+    }
+  }
+
   const isValidating = validationState === "loading";
   const isRunning = simulationState === "loading";
   const isRequestActive = isValidating || isRunning;
   const selectedPosition = selectedOperation?.position ?? null;
+  const cnotRemoved = isCnotRemovedExperiment(circuit);
+  const hasVerifiedModifiedExecution = Boolean(
+    cnotRemoved && simulationState === "success" && simulationResult
+  );
 
   return (
     <main className="app-shell">
@@ -192,6 +384,76 @@ export function CircuitLab() {
       </header>
 
       <div className="page-content" id="top">
+        <BellStateLesson
+          isComplete={progress.learn}
+          onComplete={() => completeStep("learn")}
+        />
+
+        <section className="challenge-card panel" aria-labelledby="challenge-heading">
+          <div className="challenge-copy">
+            <p className="eyebrow">Experiment · Bell State</p>
+            <h2 id="challenge-heading">Break the Bell State</h2>
+            <p>
+              The Bell State is created because the CNOT gate links the two qubits.
+              Remove the CNOT and see what changes.
+            </p>
+          </div>
+          <div className="challenge-actions">
+            <span
+              className={
+                progress.challenge ? "challenge-status challenge-status-complete" : "challenge-status"
+              }
+              aria-live="polite"
+            >
+              {progress.challenge
+                ? "Challenge complete"
+                : cnotRemoved
+                  ? "CNOT removed · run to verify"
+                  : "Challenge ready"}
+            </span>
+            <button
+              type="button"
+              className="button button-primary"
+              onClick={removeBellStateCnot}
+              disabled={isRequestActive || cnotRemoved}
+            >
+              Remove CNOT
+            </button>
+          </div>
+          {cnotRemoved ? (
+            <div className="challenge-feedback">
+              {hasVerifiedModifiedExecution ? (
+                <>
+                  <div>
+                    <strong>What changed?</strong>
+                    <p>
+                      <b>Before:</b> CNOT creates the correlation between the qubits. <b>After:</b>{" "}
+                      removing it changes the circuit&apos;s correlations.
+                    </p>
+                  </div>
+                  <div className="challenge-feedback-actions">
+                    <button
+                      type="button"
+                      className="button button-secondary"
+                      onClick={() =>
+                        handleAskTutor("Why did the result change after I removed the CNOT gate?")
+                      }
+                      disabled={tutorState === "loading"}
+                    >
+                      Ask Gemini: Why did the result change?
+                    </button>
+                    <span>Try it: restore the Bell State and run again.</span>
+                  </div>
+                </>
+              ) : (
+                <p>
+                  CNOT removed. Run the modified circuit to verify the change with the simulator.
+                </p>
+              )}
+            </div>
+          ) : null}
+        </section>
+
         <section className="intro" id="circuit-lab" aria-labelledby="page-title">
           <div className="intro-copy">
             <p className="eyebrow">Learn · Build · Run · Understand</p>
@@ -201,18 +463,7 @@ export function CircuitLab() {
               inspect the verified measurement result from the simulator.
             </p>
           </div>
-          <div className="concept-note" id="learn">
-            <span className="concept-note-icon" aria-hidden="true">
-              ∴
-            </span>
-            <div>
-              <span className="concept-note-label">Concept</span>
-              <strong>Superposition → correlation</strong>
-              <p>
-                H creates a superposition on q0. CX correlates q1 with q0.
-              </p>
-            </div>
-          </div>
+          <LearningProgress progress={progress} />
         </section>
 
         <div className="lab-layout">
@@ -366,7 +617,7 @@ export function CircuitLab() {
                   onClick={loadBellState}
                   disabled={isRequestActive}
                 >
-                  Reset starter
+                  Reset Bell State
                 </button>
               </div>
             </div>
@@ -398,8 +649,25 @@ export function CircuitLab() {
           <ResultsPanel
             circuit={circuit}
             result={simulationResult}
+            baselineResult={baselineResult}
+            modifiedResult={cnotRemoved ? simulationResult : null}
             isRunning={isRunning}
             error={simulationState === "error" ? simulationError : ""}
+          />
+
+          <TutorPanel
+            isLoading={tutorState === "loading"}
+            response={tutorResponse}
+            error={tutorState === "error" ? tutorError : ""}
+            errorCode={tutorState === "error" ? tutorErrorCode : ""}
+            hasVerifiedSimulation={Boolean(simulationResult)}
+            onAsk={handleAskTutor}
+          />
+
+          <BellStatePractice
+            isComplete={progress.practice}
+            hasVerifiedSimulation={simulationState === "success" && simulationResult !== null}
+            onComplete={() => completeStep("practice")}
           />
         </div>
       </div>

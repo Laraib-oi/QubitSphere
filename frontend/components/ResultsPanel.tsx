@@ -6,6 +6,8 @@ import { ProbabilityBars } from "@/components/ProbabilityBars";
 type ResultsPanelProps = {
   circuit: CircuitIR;
   result: CircuitSimulationResult | null;
+  baselineResult?: CircuitSimulationResult | null;
+  modifiedResult?: CircuitSimulationResult | null;
   isRunning: boolean;
   error: string;
 };
@@ -27,6 +29,18 @@ function isBellStateCircuit(circuit: CircuitIR): boolean {
     controlledNot.control === 0 &&
     controlledNot.target === 1 &&
     controlledNot.position === 1
+  );
+}
+
+function isCnotRemovedBellExperiment(circuit: CircuitIR): boolean {
+  return (
+    circuit.qubits === 2 &&
+    circuit.operations.some(
+      (operation) => operation.gate === "H" && operation.targets?.[0] === 0
+    ) &&
+    !circuit.operations.some(
+      (operation) => operation.gate === "CX" && operation.control === 0 && operation.target === 1
+    )
   );
 }
 
@@ -54,7 +68,47 @@ function resultContext(circuit: CircuitIR): {
   };
 }
 
-export function ResultsPanel({ circuit, result, isRunning, error }: ResultsPanelProps) {
+function ResultComparisonCard({
+  title,
+  result,
+}: {
+  title: string;
+  result: CircuitSimulationResult;
+}) {
+  return (
+    <article className="result-comparison-card">
+      <div className="result-comparison-heading">
+        <h3>{title}</h3>
+        <span>{result.shots} shots</span>
+      </div>
+
+      <div className="result-section">
+        <div className="result-section-heading">
+          <h4>Measurement counts</h4>
+          <span>Observed shots</span>
+        </div>
+        <MeasurementHistogram counts={result.counts} />
+      </div>
+
+      <div className="result-section">
+        <div className="result-section-heading">
+          <h4>Probabilities</h4>
+          <span>Derived by the simulator</span>
+        </div>
+        <ProbabilityBars probabilities={result.probabilities} />
+      </div>
+    </article>
+  );
+}
+
+export function ResultsPanel({
+  circuit,
+  result,
+  baselineResult,
+  modifiedResult,
+  isRunning,
+  error,
+}: ResultsPanelProps) {
   const currentContext = resultContext(circuit);
   const bellStateRun = Boolean(
     result &&
@@ -62,6 +116,7 @@ export function ResultsPanel({ circuit, result, isRunning, error }: ResultsPanel
       "00" in result.counts &&
       "11" in result.counts
   );
+  const cnotRemovedRun = Boolean(result && isCnotRemovedBellExperiment(circuit));
 
   return (
     <section className="panel results-panel" aria-labelledby="results-heading">
@@ -126,7 +181,12 @@ export function ResultsPanel({ circuit, result, isRunning, error }: ResultsPanel
             <span className="insight-mark" aria-hidden="true">
               ✓
             </span>
-            {bellStateRun ? (
+            {cnotRemovedRun ? (
+              <span>
+                Without the CNOT, the qubits are no longer being entangled by this circuit.
+                The histogram shows the simulator&apos;s verified modified result.
+              </span>
+            ) : bellStateRun ? (
               <span>
                 The Bell State run produced the correlated outcomes <strong>00</strong>{" "}
                 and <strong>11</strong>.
@@ -138,21 +198,36 @@ export function ResultsPanel({ circuit, result, isRunning, error }: ResultsPanel
             )}
           </div>
 
-          <div className="result-section">
-            <div className="result-section-heading">
-              <h3>Measurement counts</h3>
-              <span>Observed shots</span>
+          {baselineResult && modifiedResult ? (
+            <div className="result-comparison" aria-label="Before and after result comparison">
+              <ResultComparisonCard title="Bell State (baseline)" result={baselineResult} />
+              <ResultComparisonCard title="Modified circuit (current)" result={modifiedResult} />
             </div>
-            <MeasurementHistogram counts={result.counts} />
-          </div>
+          ) : (
+            <>
+              {!baselineResult ? (
+                <p className="comparison-prompt">
+                  Run the Bell State (Reset → Run) to capture baseline for comparison.
+                </p>
+              ) : null}
 
-          <div className="result-section">
-            <div className="result-section-heading">
-              <h3>Probabilities</h3>
-              <span>Derived by the simulator</span>
-            </div>
-            <ProbabilityBars probabilities={result.probabilities} />
-          </div>
+              <div className="result-section">
+                <div className="result-section-heading">
+                  <h3>Measurement counts</h3>
+                  <span>Observed shots</span>
+                </div>
+                <MeasurementHistogram counts={result.counts} />
+              </div>
+
+              <div className="result-section">
+                <div className="result-section-heading">
+                  <h3>Probabilities</h3>
+                  <span>Derived by the simulator</span>
+                </div>
+                <ProbabilityBars probabilities={result.probabilities} />
+              </div>
+            </>
+          )}
         </div>
       ) : null}
     </section>
